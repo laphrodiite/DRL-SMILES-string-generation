@@ -1,61 +1,91 @@
 import pandas as pd
 from rdkit import Chem
-from tqdm import tqdm  # Progress bar
-
-# Load from local file
-local_file = "250k_rndm_zinc_drugs_clean_3.csv"
-zinc_df = pd.read_csv(local_file, sep=',', usecols=['smiles']).sample(10000)  # Only load 'smiles' column
-zinc_df.to_csv("zinc_sample_10k.csv", index=False)
-print(f"Loaded {len(zinc_df)} molecules. Example:\n{zinc_df.head()}")
-
-# Validate and clean-up SMILES
-def validate_smiles(smiles_list):
-    valid_smiles = []
-    for smi in tqdm(smiles_list, desc="Validating SMILES"):
-        mol = Chem.MolFromSmiles(smi)
-        if mol:  # Only keep valid molecules
-            valid_smiles.append(smi)
-    return valid_smiles
-
-valid_smiles = validate_smiles(zinc_df['smiles'].tolist())
-print(f"Valid SMILES: {len(valid_smiles)}/{len(zinc_df)}")
-
-# Build vocabulary with tokenization
-tokens = set()
-for smi in valid_smiles:
-    tokens.update(list(smi))
-vocab = sorted(tokens) + ["<PAD>", "<START>", "<END>"]
-token_to_idx = {t:i for i,t in enumerate(vocab)}
-
-print(f"Vocabulary size: {len(vocab)}")
-print(f"Example tokens: {list(vocab)[:10]}...")
-
-# Create dataset
 import torch
 from torch.utils.data import Dataset, DataLoader
+import numpy as np
 
-class SmilesDataset(Dataset):
-    def __init__(self, smiles, token_to_idx, max_len=100):
-        self.smiles = smiles
-        self.token_to_idx = token_to_idx
-        self.max_len = max_len
+# Given tokens (with added <PAD> for handling variable lengths)
+TOKENS = [
+    '<', '>', '#', '%', ')', '(', '+', '-', '/', '.', '1', '0', '3', '2', '5', '4', '7',
+    '6', '9', '8', '=', 'A', '@', 'C', 'B', 'F', 'I', 'H', 'O', 'N', 'P', 'S', '[', ']',
+    '\\', 'c', 'e', 'i', 'l', 'o', 'n', 'p', 's', 'r', '\n', '<PAD>'
+]
+token_to_idx = {t: i for i, t in enumerate(TOKENS)}
+
+def load_and_process(csv_path, n_samples=None):
+    """Load, validate, and format SMILES data"""
+    df = pd.read_csv(csv_path)
+    
+    # Sample if requested
+    if n_samples:
+        df = df.sample(n_samples)
+    
+    # Validate SMILES
+    valid_data = []
+    for _, row in df.iterrows():
+        try:
+            mol = Chem.MolFromSmiles(row['smiles'])
+            if mol:
+                # Add newline terminator
+                formatted_smi = row['smiles'].strip() + '\n'
+                valid_data.append({
+                    'smiles': formatted_smi,
+                    'logP': row['logP'],
+                    'qed': row['qed'],
+                    'SAS': row['SAS']
+                })
+        except:
+            continue
+    
+    return pd.DataFrame(valid_data)
+
+def filter_by_tokens(df):
+    """Filter SMILES with invalid characters"""
+    valid = []
+    for smi in df['smiles']:
+        if all(c in token_to_idx for c in smi):
+            valid.append(smi)
+        else:
+            invalid_chars = set(smi) - set(token_to_idx.keys())
+            print(f"Removed SMILES with invalid chars {invalid_chars}: {smi.strip()}")
+    return df[df['smiles'].isin(valid)]
+
+class SMILESDataset(Dataset):
+    def __init__(self, df, max_len=None):
+        self.df = df
+        self.max_len = max_len or self._calculate_max_length()
+        
+    def _calculate_max_length(self):
+        lengths = self.df['smiles'].apply(len)
+        return int(np.percentile(lengths, 95))  # 95th percentile length
 
     def __len__(self):
-        return len(self.smiles)
+        return len(self.df)
 
     def __getitem__(self, idx):
-        smile = self.smiles[idx]
-        # Add start/end tokens and pad
-        tokens = ["<START>"] + list(smile) + ["<END>"]
-        tokens = tokens[:self.max_len] + ["<PAD>"] * (self.max_len - len(tokens))
-        indices = [self.token_to_idx[t] for t in tokens]
-        return torch.tensor(indices[:-1]), torch.tensor(indices[1:])  # (input, target)
+        smi = self.df.iloc[idx]['smiles']
+        indices = [token_to_idx[c] for c in smi]
+        
+        # Truncate or pad
+        if len(indices) > self.max_len:
+            indices = indices[:self.max_len]
+        else:
+            padding = [token_to_idx['<PAD>']] * (self.max_len - len(indices))
+            indices += padding
+            
+        return torch.LongTensor(indices)
 
-# Initialize DataLoader
-dataset = SmilesDataset(valid_smiles, token_to_idx)
-dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-
-# Verify one batch
-for x, y in dataloader:
-    print(f"Batch shape: {x.shape}, {y.shape}")  # Should be (64, max_len)
-    break
+# Usage example
+if __name__ == "__main__":
+    # Load and process data
+    df = load_and_process("250k_rndm_zinc_drugs_clean_3.csv", n_samples=10000)
+    filtered_df = filter_by_tokens(df)
+    
+    # Create dataset and dataloader
+    dataset = SMILESDataset(filtered_df)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+    
+    # Test output
+    sample = next(iter(dataloader))
+    print(f"Batch shape: {sample.shape}")
+    print("Sample sequence:", [TOKENS[i] for i in sample[0].tolist()[:10]])
