@@ -1,91 +1,86 @@
 import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
-from rdkit import Chem
-from rdkit.Chem import QED
-from SMILES_load import token_to_idx, TOKENS  # Import from your loader
+import torch
+from models.generator import SMILESGenerator
+from models.predictor import SMILESPredictor
+from SMILES_load import TOKENS, token_to_idx
+
 
 class SMILESEnv(gym.Env):
-    def __init__(self, token_to_idx, max_len=80):
-        """
-        Args:
-            token_to_idx: Dictionary mapping tokens to indices (from SMILES_load.py)
-            max_len: Maximum allowed SMILES length
-        """
-        self.token_to_idx = token_to_idx
-        self.idx_to_token = {v: k for k, v in token_to_idx.items()}
-        self.max_len = max_len
-        
-        # Action space: Choose any token
-        self.action_space = gym.spaces.Discrete(len(token_to_idx))
-        
-        # Observation space: Current sequence (padded to max_len)
-        self.observation_space = gym.spaces.Box(
-            low=0, 
-            high=len(token_to_idx)-1, 
-            shape=(max_len,), 
-            dtype=np.int32
+    def __init__(self, predictor_ckpt, reward_fn, max_len=100):
+        super().__init__()
+        self.max_len   = max_len
+        self.reward_fn = reward_fn
+
+        # Load predictor model
+        self.predictor = SMILESPredictor(len(TOKENS))
+        self.predictor.load_state_dict(torch.load(predictor_ckpt))
+        self.predictor.eval()
+
+        # Define action and observation spaces
+        self.action_space = spaces.Discrete(len(TOKENS))
+        self.observation_space = spaces.Box(
+            low=0,
+            high=len(TOKENS) - 1,
+            shape=(max_len,),
+            dtype=np.int64
         )
-        
-        # Initialize state tracking
+
         self.reset()
 
-    def reset(self):
-        """Start new episode with empty sequence"""
-        self.current_smiles = []
-        self.current_step = 0
-        return self._get_obs()
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        self.smiles = ['<']
+        self.done = False
+        obs = self._get_obs()
+        info = {}
+        return obs, info
 
     def step(self, action):
-        """
-        Args:
-            action: Token index to append
-        Returns:
-            obs: Updated sequence
-            reward: Calculated reward
-            done: Termination flag
-            info: Additional metrics
-        """
-        token = self.idx_to_token[action]
-        self.current_smiles.append(token)
-        self.current_step += 1
-        
-        # Termination conditions
-        done = (token == '\n') or (self.current_step >= self.max_len)
-        
-        # Reward calculation
-        reward = 0
-        validity = 0
-        qed = 0
-        
-        if done:
-            smile_str = ''.join(self.current_smiles[:-1])  # Exclude \n
-            mol = Chem.MolFromSmiles(smile_str)
-            
-            if mol:
-                validity = 1.0
-                qed = QED.qed(mol)
-                reward = validity + 0.5 * qed
+        tok = TOKENS[action]
+        self.smiles.append(tok)
+
+        # Define done conditions
+        terminated = tok == '\n'
+        truncated = len(self.smiles) >= self.max_len
+        self.done = terminated or truncated
+
+        reward = 0.0
+        if self.done:
+            seq = ''.join(self.smiles)
+
+            # Check for invalid characters
+            try:
+                idxs = [token_to_idx[c] for c in seq]
+            except KeyError:
+                print(f"[Invalid character in sequence]: {seq}")
+                return self._get_obs(), -5.0, terminated, truncated, {}  # harsh penalty
+
+            # RDKit validity check
+            from rdkit import Chem
+            mol = Chem.MolFromSmiles(seq.replace('<', '').replace('\n', ''))  # clean up special tokens
+
+            if mol is None:
+                reward = -5.0  # strong penalty for invalid SMILES
             else:
-                reward = -1.0
-        
-        info = {
-            'valid': bool(validity),
-            'qed': qed,
-            'smiles': ''.join(self.current_smiles[:-1]) if done else None
-        }
-        
-        return self._get_obs(), reward, done, info
+                # Prepare input for predictor
+                padded = idxs + [token_to_idx['<PAD>']] * (self.max_len - len(idxs))
+                t = torch.LongTensor([padded])
+                with torch.no_grad():
+                    pred = self.predictor(t).item()
+                reward = self.reward_fn(seq, pred) if callable(self.reward_fn) else pred
+
+                # Bonus for early termination (optional)
+                if tok == '\n':
+                    reward += 0.5  # reward for stopping early
+
+
+        obs = self._get_obs()
+        info = {}
+        return obs, reward, terminated, truncated, info
 
     def _get_obs(self):
-        """Convert current state to fixed-length observation"""
-        obs = [self.token_to_idx[t] for t in self.current_smiles]
-        obs += [self.token_to_idx['<PAD>']] * (self.max_len - len(obs))
-        return np.array(obs, dtype=np.int32)
-
-    def render(self, mode='human'):
-        """Optional: Visualize current SMILES"""
-        print(''.join(self.current_smiles))
-
-    def close(self):
-        """Cleanup resources if needed"""
-        pass
+        idxs = [token_to_idx[c] for c in self.smiles]
+        padded = idxs + [token_to_idx['<PAD>']] * (self.max_len - len(idxs))
+        return np.array(padded, dtype=np.int64)
