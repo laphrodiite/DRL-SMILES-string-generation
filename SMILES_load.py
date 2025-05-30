@@ -75,7 +75,7 @@ class SMILESDataset(Dataset):
             
         return torch.LongTensor(indices)
 
-# Usage example
+
 if __name__ == "__main__":
     # Load and process data
     df = load_and_process("250k_rndm_zinc_drugs_clean_3.csv", n_samples=10000)

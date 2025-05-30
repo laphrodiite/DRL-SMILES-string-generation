@@ -49,36 +49,36 @@ class SMILESEnv(gym.Env):
         reward = 0.0
         if self.done:
             seq = ''.join(self.smiles)
-
             # Check for invalid characters
             try:
                 idxs = [token_to_idx[c] for c in seq]
             except KeyError:
-                print(f"[Invalid character in sequence]: {seq}")
-                return self._get_obs(), -5.0, terminated, truncated, {}  # harsh penalty
+                return self._get_obs(), -1.0, terminated, truncated, {}  # softer penalty
 
-            # RDKit validity check
             from rdkit import Chem
-            mol = Chem.MolFromSmiles(seq.replace('<', '').replace('\n', ''))  # clean up special tokens
+            mol = Chem.MolFromSmiles(seq.replace('<', '').replace('\n', ''))  # clean up
 
-            if mol is None:
-                reward = -5.0  # strong penalty for invalid SMILES
-            else:
-                # Prepare input for predictor
-                padded = idxs + [token_to_idx['<PAD>']] * (self.max_len - len(idxs))
-                t = torch.LongTensor([padded])
-                with torch.no_grad():
-                    pred = self.predictor(t).item()
-                reward = self.reward_fn(seq, pred) if callable(self.reward_fn) else pred
+            # Predict activity (optional predictor model)
+            padded = idxs + [token_to_idx['<PAD>']] * (self.max_len - len(idxs))
+            t = torch.LongTensor([padded])
+            with torch.no_grad():
+                pred = self.predictor(t).item()
 
-                # Bonus for early termination (optional)
-                if tok == '\n':
-                    reward += 0.5  # reward for stopping early
+            # Compute reward
+            reward = self.reward_fn(seq, pred) if callable(self.reward_fn) else pred
+
+            # Normalize reward
+            reward = reward
+
+            # Bonus for early stop
+            if tok == '\n':
+                reward += 0.2  
 
 
         obs = self._get_obs()
         info = {}
         return obs, reward, terminated, truncated, info
+
 
     def _get_obs(self):
         idxs = [token_to_idx[c] for c in self.smiles]
