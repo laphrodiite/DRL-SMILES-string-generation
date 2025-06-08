@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
+import os
+from rdkit.Chem import Draw
 from rdkit import Chem
 from rdkit.Chem import QED
 from rdkit import RDLogger
@@ -29,6 +31,20 @@ pred.load_state_dict(torch.load("checkpoints/pred.pt", map_location=device))
 pred.eval()
 
 # --- Utilities ---
+def save_molecule_images(smiles_list, name, max_mols=20):
+    """Save images of generated molecules from SMILES strings."""
+    os.makedirs(f"results/{name}_molecules", exist_ok=True)
+    mols = [Chem.MolFromSmiles(smi) for smi in smiles_list[:max_mols] if Chem.MolFromSmiles(smi) is not None]
+
+    for i, mol in enumerate(mols):
+        img = Draw.MolToImage(mol, size=(300, 300))
+        img.save(f"results/{name}_molecules/mol_{i+1}.png")
+
+    # Optional: one grid image for preview
+    grid = Draw.MolsToGridImage(mols, molsPerRow=5, subImgSize=(200, 200), legends=[f"{i+1}" for i in range(len(mols))])
+    grid.save(f"results/{name}_molecules/grid.png")
+    print(f"[{name}] Molecule images saved to 'results/{name}_molecules/'")
+
 def decode(indices):
     return ''.join(TOKENS[i] for i in indices if TOKENS[i] not in ['<PAD>', '<', '\n'])
 
@@ -79,7 +95,11 @@ def evaluate_generator(generator, name, n=1000):
     for smi in valid_smiles[:10]:
         print(" ", smi)
 
+    # Save molecule images
+    save_molecule_images(valid_smiles, name)
+
     return scores, qed_scores, Counter(token_freqs)
+
 
 
 # --- Run evaluation ---

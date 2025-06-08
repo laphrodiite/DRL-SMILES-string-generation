@@ -1,5 +1,5 @@
 import torch.nn as nn
-from project.SMILES_load import token_to_idx
+from SMILES_load import token_to_idx
 
 class SMILESPredictor(nn.Module):
     def __init__(self, vocab_size, emb_dim=100, hidden_dim=100):

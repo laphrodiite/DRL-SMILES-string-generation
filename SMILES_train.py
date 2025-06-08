@@ -257,15 +257,15 @@ if __name__ == "__main__":
 
         # Generator pretraining
         data_csv="data/250k_rndm_zinc_drugs_clean_3.csv",
-        n_pretrain=10000,
-        pre_epochs=10,
-        batch=64,
+        n_pretrain=100000,
+        pre_epochs=100,
+        batch=138,
         lr=1e-3,
         gen_pre_ckpt="checkpoints/gen_pre.pt",
 
         # Property predictor training
         prop_csv="data/250k_rndm_zinc_drugs_clean_3.csv",
-        prop_column="logP",
+        prop_column="qed",
         pred_ckpt="checkpoints/pred.pt",
         emb_dim=100,
         hidden_dim=100,
